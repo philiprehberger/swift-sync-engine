@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-02
+
+### Added
+- `sync(push:pull:onProgress:)` with progress reporting callback
+- `SyncEngine.lastSyncResult` for accessing the most recent sync result
+- `LocalStore.query(where:)` for predicate-based record filtering
+- `LocalStore.putAll(_:)` for bulk record insertion
+- `LocalStore.statistics` for record count breakdown by status
+
+### Fixed
+- Update swift-tools-version from 5.9 to 6.0
+
 ## [0.1.0] - 2026-04-02
 
 ### Added

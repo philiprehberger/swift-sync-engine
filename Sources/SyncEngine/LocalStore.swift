@@ -71,4 +71,36 @@ public final class LocalStore: @unchecked Sendable {
         records.removeAll()
         lock.unlock()
     }
+
+    /// Query records with a predicate.
+    ///
+    /// - Parameter predicate: Closure that returns true for matching records.
+    /// - Returns: Array of matching records.
+    public func query(where predicate: (SyncRecord) -> Bool) -> [SyncRecord] {
+        lock.lock()
+        defer { lock.unlock() }
+        return records.values.filter(predicate)
+    }
+
+    /// Bulk insert an array of records.
+    ///
+    /// - Parameter items: The records to insert.
+    public func putAll(_ items: [SyncRecord]) {
+        lock.lock()
+        for item in items {
+            records[item.id] = item
+        }
+        lock.unlock()
+    }
+
+    /// Statistics about record statuses.
+    public var statistics: (total: Int, pending: Int, synced: Int, modified: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        let total = records.count
+        let pending = records.values.filter { $0.status == .pending }.count
+        let synced = records.values.filter { $0.status == .synced }.count
+        let modified = records.values.filter { $0.status == .modified }.count
+        return (total: total, pending: pending, synced: synced, modified: modified)
+    }
 }

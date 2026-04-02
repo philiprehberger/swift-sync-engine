@@ -55,4 +55,29 @@ final class SyncEngineTests: XCTestCase {
         let result = SyncResult(pushed: 2, pulled: 3, conflicts: 1, retried: 1)
         XCTAssertEqual(result.total, 7)
     }
+
+    func testLastSyncResult() throws {
+        let engine = SyncEngine()
+        XCTAssertNil(engine.lastSyncResult)
+        _ = try engine.sync(push: { _ in [] }, pull: { [] })
+        XCTAssertNotNil(engine.lastSyncResult)
+    }
+
+    func testSyncWithProgress() throws {
+        let engine = SyncEngine()
+        engine.localStore.put(SyncRecord(id: "1", status: .pending))
+
+        var progressCalls: [(Int, Int)] = []
+        let result = try engine.sync(
+            push: { records in records.map { $0.withStatus(.synced) } },
+            pull: { [SyncRecord(id: "r1", status: .synced)] },
+            onProgress: { current, total in
+                progressCalls.append((current, total))
+            }
+        )
+
+        XCTAssertFalse(progressCalls.isEmpty)
+        XCTAssertEqual(result.pushed, 1)
+        XCTAssertEqual(result.pulled, 1)
+    }
 }

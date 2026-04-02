@@ -52,4 +52,33 @@ final class LocalStoreTests: XCTestCase {
         store.clear()
         XCTAssertEqual(store.count, 0)
     }
+
+    func testQuery() {
+        let store = LocalStore()
+        store.put(SyncRecord(id: "a", data: ["type": "user"], status: .synced))
+        store.put(SyncRecord(id: "b", data: ["type": "post"], status: .synced))
+        store.put(SyncRecord(id: "c", data: ["type": "user"], status: .pending))
+        let users = store.query { $0.data["type"] == "user" }
+        XCTAssertEqual(users.count, 2)
+    }
+
+    func testPutAll() {
+        let store = LocalStore()
+        let records = (0..<5).map { SyncRecord(id: "\($0)") }
+        store.putAll(records)
+        XCTAssertEqual(store.count, 5)
+    }
+
+    func testStatistics() {
+        let store = LocalStore()
+        store.put(SyncRecord(id: "1", status: .pending))
+        store.put(SyncRecord(id: "2", status: .synced))
+        store.put(SyncRecord(id: "3", status: .modified))
+        store.put(SyncRecord(id: "4", status: .synced))
+        let stats = store.statistics
+        XCTAssertEqual(stats.total, 4)
+        XCTAssertEqual(stats.pending, 1)
+        XCTAssertEqual(stats.synced, 2)
+        XCTAssertEqual(stats.modified, 1)
+    }
 }

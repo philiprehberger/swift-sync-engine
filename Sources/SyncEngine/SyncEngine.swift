@@ -8,6 +8,9 @@ public final class SyncEngine: @unchecked Sendable {
     private let lock = NSLock()
     private var _isSyncing = false
 
+    /// The result of the most recent sync operation.
+    public private(set) var lastSyncResult: SyncResult?
+
     /// Whether a sync is currently in progress.
     public var isSyncing: Bool {
         lock.lock()
@@ -96,7 +99,104 @@ public final class SyncEngine: @unchecked Sendable {
             }
         }
 
-        return SyncResult(pushed: pushed, pulled: pulled, conflicts: conflicts, retried: retried)
+        let result = SyncResult(pushed: pushed, pulled: pulled, conflicts: conflicts, retried: retried)
+        lock.lock()
+        lastSyncResult = result
+        lock.unlock()
+        return result
+    }
+
+    /// Perform a sync cycle with progress reporting.
+    ///
+    /// - Parameters:
+    ///   - push: Closure that sends local changes to remote.
+    ///   - pull: Closure that fetches remote changes.
+    ///   - onProgress: Called with (processed, total) counts during sync.
+    /// - Returns: A SyncResult summarizing the operation.
+    public func sync(
+        push: ([SyncRecord]) throws -> [SyncRecord],
+        pull: () throws -> [SyncRecord],
+        onProgress: ((Int, Int) -> Void)? = nil
+    ) throws -> SyncResult {
+        lock.lock()
+        _isSyncing = true
+        lock.unlock()
+
+        defer {
+            lock.lock()
+            _isSyncing = false
+            lock.unlock()
+        }
+
+        let pending = store.pending()
+        let retryItems = queue.dequeueAll()
+        let totalEstimate = pending.count + retryItems.count + 1 // +1 for pull
+        var processed = 0
+        var pushed = 0
+
+        // Push pending
+        if !pending.isEmpty {
+            do {
+                let responses = try push(pending)
+                for record in responses {
+                    store.markSynced(record.id)
+                }
+                pushed = responses.count
+            } catch {
+                for record in pending {
+                    queue.enqueue(record)
+                }
+            }
+            processed += pending.count
+            onProgress?(processed, totalEstimate)
+        }
+
+        // Retry queued
+        var retried = 0
+        if !retryItems.isEmpty {
+            do {
+                let responses = try push(retryItems)
+                for record in responses {
+                    store.markSynced(record.id)
+                }
+                retried = responses.count
+            } catch {
+                for item in retryItems {
+                    queue.enqueue(item)
+                }
+            }
+            processed += retryItems.count
+            onProgress?(processed, totalEstimate)
+        }
+
+        // Pull
+        let remoteRecords = try pull()
+        var pulled = 0
+        var conflicts = 0
+
+        for remote in remoteRecords {
+            if let local = store.get(remote.id) {
+                if local.updatedAt != remote.updatedAt && local.status == .modified {
+                    let resolved = resolver.resolve(local: local, remote: remote)
+                    store.put(resolved)
+                    conflicts += 1
+                } else {
+                    store.put(remote.withStatus(.synced))
+                    pulled += 1
+                }
+            } else {
+                store.put(remote.withStatus(.synced))
+                pulled += 1
+            }
+        }
+        processed += 1
+        onProgress?(processed, totalEstimate)
+
+        let result = SyncResult(pushed: pushed, pulled: pulled, conflicts: conflicts, retried: retried)
+        lock.lock()
+        lastSyncResult = result
+        lock.unlock()
+        return result
     }
 
     private func retryPending(push: ([SyncRecord]) throws -> [SyncRecord]) -> Int {

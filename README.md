@@ -98,6 +98,26 @@ let result = try engine.sync(push: myAPI.upload, pull: myAPI.fetch)
 print("Retried: \(result.retried)")
 ```
 
+### Progress Reporting
+
+```swift
+let result = try engine.sync(
+    push: { records in api.upload(records) },
+    pull: { api.fetchChanges() },
+    onProgress: { current, total in
+        print("Progress: \(current)/\(total)")
+    }
+)
+```
+
+### Query and Bulk Operations
+
+```swift
+let users = engine.localStore.query { $0.data["type"] == "user" }
+engine.localStore.putAll(records)
+let stats = engine.localStore.statistics  // (total: 10, pending: 2, synced: 7, modified: 1)
+```
+
 ### Sync Records
 
 ```swift
@@ -118,6 +138,8 @@ record = record.withStatus(.synced)
 | `.retryQueue` | Access the retry queue |
 | `.conflictResolver` | Access the conflict resolver |
 | `.isSyncing` | Whether a sync is in progress |
+| `.sync(push:pull:onProgress:)` | Sync with progress callback |
+| `.lastSyncResult` | Most recent sync result |
 
 ### `LocalStore`
 
@@ -131,6 +153,9 @@ record = record.withStatus(.synced)
 | `.markSynced(_:)` | Mark as synced |
 | `.markModified(_:)` | Mark as locally modified |
 | `.clear()` | Remove all records |
+| `.query(where:)` | Filter records by predicate |
+| `.putAll(_:)` | Bulk insert records |
+| `.statistics` | Count by status (total, pending, synced, modified) |
 
 ### `ConflictResolver`
 
