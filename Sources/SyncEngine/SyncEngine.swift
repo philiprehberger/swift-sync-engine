@@ -64,9 +64,7 @@ public final class SyncEngine: @unchecked Sendable {
         if !pending.isEmpty {
             do {
                 let responses = try push(pending)
-                for record in responses {
-                    store.markSynced(record.id)
-                }
+                applyPushResults(responses, deletedIDs: deletedIDs(in: pending))
                 pushed = responses.count
             } catch {
                 for record in pending {
@@ -80,24 +78,7 @@ public final class SyncEngine: @unchecked Sendable {
 
         // Pull remote changes
         let remoteRecords = try pull()
-        var pulled = 0
-        var conflicts = 0
-
-        for remote in remoteRecords {
-            if let local = store.get(remote.id) {
-                if local.updatedAt != remote.updatedAt && local.status == .modified {
-                    let resolved = resolver.resolve(local: local, remote: remote)
-                    store.put(resolved)
-                    conflicts += 1
-                } else {
-                    store.put(remote.withStatus(.synced))
-                    pulled += 1
-                }
-            } else {
-                store.put(remote.withStatus(.synced))
-                pulled += 1
-            }
-        }
+        let (pulled, conflicts) = applyPullResults(remoteRecords)
 
         let result = SyncResult(pushed: pushed, pulled: pulled, conflicts: conflicts, retried: retried)
         lock.lock()
@@ -138,9 +119,7 @@ public final class SyncEngine: @unchecked Sendable {
         if !pending.isEmpty {
             do {
                 let responses = try push(pending)
-                for record in responses {
-                    store.markSynced(record.id)
-                }
+                applyPushResults(responses, deletedIDs: deletedIDs(in: pending))
                 pushed = responses.count
             } catch {
                 for record in pending {
@@ -156,9 +135,7 @@ public final class SyncEngine: @unchecked Sendable {
         if !retryItems.isEmpty {
             do {
                 let responses = try push(retryItems)
-                for record in responses {
-                    store.markSynced(record.id)
-                }
+                applyPushResults(responses, deletedIDs: deletedIDs(in: retryItems))
                 retried = responses.count
             } catch {
                 for item in retryItems {
@@ -171,24 +148,7 @@ public final class SyncEngine: @unchecked Sendable {
 
         // Pull
         let remoteRecords = try pull()
-        var pulled = 0
-        var conflicts = 0
-
-        for remote in remoteRecords {
-            if let local = store.get(remote.id) {
-                if local.updatedAt != remote.updatedAt && local.status == .modified {
-                    let resolved = resolver.resolve(local: local, remote: remote)
-                    store.put(resolved)
-                    conflicts += 1
-                } else {
-                    store.put(remote.withStatus(.synced))
-                    pulled += 1
-                }
-            } else {
-                store.put(remote.withStatus(.synced))
-                pulled += 1
-            }
-        }
+        let (pulled, conflicts) = applyPullResults(remoteRecords)
         processed += 1
         onProgress?(processed, totalEstimate)
 
@@ -205,9 +165,7 @@ public final class SyncEngine: @unchecked Sendable {
         var retried = 0
         do {
             let responses = try push(items)
-            for record in responses {
-                store.markSynced(record.id)
-            }
+            applyPushResults(responses, deletedIDs: deletedIDs(in: items))
             retried = responses.count
         } catch {
             for item in items {
@@ -215,5 +173,53 @@ public final class SyncEngine: @unchecked Sendable {
             }
         }
         return retried
+    }
+
+    /// The ids of records that were soft-deleted, so confirmed pushes clear the tombstone.
+    private func deletedIDs(in records: [SyncRecord]) -> Set<String> {
+        Set(records.filter { $0.status == .deleted }.map(\.id))
+    }
+
+    /// Apply the outcome of a push: remove confirmed deletions, mark the rest synced.
+    private func applyPushResults(_ responses: [SyncRecord], deletedIDs: Set<String>) {
+        for record in responses {
+            if deletedIDs.contains(record.id) {
+                store.remove(record.id)
+            } else {
+                store.markSynced(record.id)
+            }
+        }
+    }
+
+    /// Apply pulled remote records: propagate deletions, resolve conflicts, and store the rest.
+    ///
+    /// - Returns: The number of records pulled and the number of conflicts resolved.
+    private func applyPullResults(_ remoteRecords: [SyncRecord]) -> (pulled: Int, conflicts: Int) {
+        var pulled = 0
+        var conflicts = 0
+
+        for remote in remoteRecords {
+            if remote.status == .deleted {
+                store.remove(remote.id)
+                pulled += 1
+                continue
+            }
+
+            if let local = store.get(remote.id) {
+                if local.updatedAt != remote.updatedAt && local.status == .modified {
+                    let resolved = resolver.resolve(local: local, remote: remote)
+                    store.put(resolved)
+                    conflicts += 1
+                } else {
+                    store.put(remote.withStatus(.synced))
+                    pulled += 1
+                }
+            } else {
+                store.put(remote.withStatus(.synced))
+                pulled += 1
+            }
+        }
+
+        return (pulled, conflicts)
     }
 }

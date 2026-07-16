@@ -4,6 +4,8 @@
 [![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fphiliprehberger%2Fswift-sync-engine%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/philiprehberger/swift-sync-engine)
 [![](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fphiliprehberger%2Fswift-sync-engine%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/philiprehberger/swift-sync-engine)
 
+![SyncEngine](https://raw.githubusercontent.com/philiprehberger/swift-sync-engine/main/package-card.webp)
+
 Offline-first data sync engine with conflict resolution, retry queues, and local caching
 
 ## Requirements
@@ -17,7 +19,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/philiprehberger/swift-sync-engine.git", from: "0.2.0")
+    .package(url: "https://github.com/philiprehberger/swift-sync-engine.git", from: "0.3.0")
 ]
 ```
 
@@ -60,6 +62,20 @@ store.markModified("1")  // flag as changed locally
 let pending = store.pending()  // records needing sync
 let all = store.all()
 ```
+
+### Deleting Records
+
+Soft-delete a record so the deletion syncs to your backend:
+
+```swift
+engine.localStore.delete("1")  // marks .deleted; included in pending()
+
+// On the next sync, a confirmed push clears the tombstone locally.
+// A remote record arriving with .deleted status removes the local copy.
+let result = try engine.sync(push: myAPI.upload, pull: myAPI.fetch)
+```
+
+Use `remove(_:)` for an immediate local-only removal that does not sync.
 
 ### Conflict Resolution
 
@@ -115,7 +131,7 @@ let result = try engine.sync(
 ```swift
 let users = engine.localStore.query { $0.data["type"] == "user" }
 engine.localStore.putAll(records)
-let stats = engine.localStore.statistics  // (total: 10, pending: 2, synced: 7, modified: 1)
+let stats = engine.localStore.statistics  // (total, pending, synced, modified, conflicted, deleted)
 ```
 
 ### Sync Records
@@ -147,7 +163,8 @@ record = record.withStatus(.synced)
 |--------|-------------|
 | `.put(_:)` | Store or update a record |
 | `.get(_:)` | Retrieve by ID |
-| `.remove(_:)` | Remove by ID |
+| `.remove(_:)` | Remove by ID (local only, does not sync) |
+| `.delete(_:)` | Soft-delete a record so the deletion syncs to remote |
 | `.all()` | Get all records |
 | `.pending()` | Get pending/modified records |
 | `.markSynced(_:)` | Mark as synced |
@@ -155,7 +172,7 @@ record = record.withStatus(.synced)
 | `.clear()` | Remove all records |
 | `.query(where:)` | Filter records by predicate |
 | `.putAll(_:)` | Bulk insert records |
-| `.statistics` | Count by status (total, pending, synced, modified) |
+| `.statistics` | Count by status (total, pending, synced, modified, conflicted, deleted) |
 
 ### `ConflictResolver`
 
