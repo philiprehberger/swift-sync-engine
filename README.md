@@ -19,7 +19,7 @@ Add to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/philiprehberger/swift-sync-engine.git", from: "0.3.0")
+    .package(url: "https://github.com/philiprehberger/swift-sync-engine.git", from: "0.4.0")
 ]
 ```
 
@@ -49,6 +49,19 @@ let result = try engine.sync(
 
 print("Pushed: \(result.pushed), Pulled: \(result.pulled), Conflicts: \(result.conflicts)")
 ```
+
+### Async Backends
+
+Real backends are `async`, so `sync` has an `async` overload that awaits them instead of blocking:
+
+```swift
+let result = try await engine.sync(
+    push: { records in try await api.upload(records) },
+    pull: { try await api.fetchChanges() }
+)
+```
+
+Same cycle as the synchronous form — pending records first, then due retries, then the pull — and the same `SyncResult`.
 
 ### Local Store
 
@@ -101,17 +114,48 @@ let engine = SyncEngine(resolver: ConflictResolver(strategy: .custom { local, re
 
 ### Retry Queue
 
-Failed push operations are automatically queued for retry:
+Failed push operations are queued for retry with exponential backoff:
 
 ```swift
-let engine = SyncEngine(queue: RetryQueue(maxAttempts: 5))
+// Up to 5 attempts; 2s before the first retry, doubling each time, capped at 60s
+let engine = SyncEngine(queue: RetryQueue(maxAttempts: 5, baseDelay: 2, maxDelay: 60))
 
 // After a failed sync, items are in the retry queue
 print(engine.retryQueue.count)
+print(engine.retryQueue.attempts(for: "doc-1"))  // attempts so far, across cycles
 
-// They'll be retried on the next sync cycle
+// Each sync picks up whatever is due
 let result = try engine.sync(push: myAPI.upload, pull: myAPI.fetch)
-print("Retried: \(result.retried)")
+print("Retried: \(result.retried), failed: \(result.failed), dropped: \(result.dropped)")
+```
+
+Attempt counts are tracked per record id and survive dequeuing, so a record that keeps failing is dropped once it reaches `maxAttempts` instead of retrying forever. A record that is both pending locally and queued for retry is pushed once per cycle, not twice.
+
+### Persistence
+
+The local store is in memory, so save it to keep offline edits across launches:
+
+```swift
+let url = URL.documentsDirectory.appending(path: "sync-store.json")
+
+// On the way out
+try engine.localStore.save(to: url)
+
+// On the way back in — pending records resume syncing
+try engine.localStore.load(from: url)
+let result = try engine.sync(push: myAPI.upload, pull: myAPI.fetch)
+```
+
+Use `encoded()` / `decode(from:)` for the raw JSON, or `snapshot()` / `restore(from:)` to move records through your own storage.
+
+### One Sync at a Time
+
+```swift
+do {
+    let result = try engine.sync(push: myAPI.upload, pull: myAPI.fetch)
+} catch SyncError.syncInProgress {
+    // Another sync is running — overlapping cycles would interleave their pushes
+}
 ```
 
 ### Progress Reporting
@@ -155,6 +199,7 @@ record = record.withStatus(.synced)
 | `.conflictResolver` | Access the conflict resolver |
 | `.isSyncing` | Whether a sync is in progress |
 | `.sync(push:pull:onProgress:)` | Sync with progress callback |
+| `.sync(push:pull:onProgress:)` (async) | Sync with `async` push/pull closures |
 | `.lastSyncResult` | Most recent sync result |
 
 ### `LocalStore`
@@ -173,6 +218,12 @@ record = record.withStatus(.synced)
 | `.query(where:)` | Filter records by predicate |
 | `.putAll(_:)` | Bulk insert records |
 | `.statistics` | Count by status (total, pending, synced, modified, conflicted, deleted) |
+| `.snapshot()` | Every record as a plain array |
+| `.restore(from:)` | Replace contents with a snapshot |
+| `.encoded()` | Encode the store as JSON with stable ordering |
+| `.decode(from:)` | Replace contents from JSON |
+| `.save(to:)` | Write the store to a file atomically |
+| `.load(from:)` | Read the store back from a file |
 
 ### `ConflictResolver`
 
@@ -186,10 +237,34 @@ record = record.withStatus(.synced)
 
 | Method | Description |
 |--------|-------------|
-| `.enqueue(_:)` | Add a failed record to retry |
-| `.dequeueAll()` | Remove and return all queued records |
+| `RetryQueue(maxAttempts:baseDelay:maxDelay:)` | Create a queue with attempt limit and backoff bounds |
+| `.enqueue(_:)` | Record a failed attempt; returns `false` if the record was dropped |
+| `.dequeueReady(now:)` | Remove and return the records whose backoff has elapsed |
+| `.dequeueAll()` | Remove and return all queued records, regardless of backoff |
+| `.markSucceeded(_:)` | Forget a record that has since synced, including its attempt history |
+| `.attempts(for:)` | Failed attempts for a record id, across cycles |
 | `.pending()` | Peek at queued items |
 | `.count` | Number of queued items |
+| `.droppedCount` | Records abandoned for exhausting `maxAttempts` |
+| `.clear()` | Clear the queue, attempt history, and dropped counter |
+
+### `SyncResult`
+
+| Property | Description |
+|----------|-------------|
+| `.pushed` | Records pushed to remote |
+| `.pulled` | Records pulled from remote |
+| `.conflicts` | Conflicts resolved |
+| `.retried` | Retry-queue records pushed |
+| `.failed` | Records whose push failed and were queued for retry |
+| `.dropped` | Records abandoned after exhausting `maxAttempts` |
+| `.total` | Total records processed |
+
+### `SyncError`
+
+| Case | Description |
+|------|-------------|
+| `.syncInProgress` | A sync was started while another was still running |
 
 ## Development
 

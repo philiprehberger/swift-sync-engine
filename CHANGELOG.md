@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-21
+
+### Added
+- `async` overload of `sync(push:pull:onProgress:)` taking `async` push and pull closures, so network-backed backends no longer have to block the calling thread
+- `SyncError.syncInProgress`, thrown when a sync starts while another is still running — `isSyncing` was tracked but never enforced, and overlapping cycles interleaved their pushes
+- `SyncResult.failed` (records whose push failed and were queued) and `.dropped` (records abandoned after exhausting `maxAttempts`); both default so the existing initializer stays source-compatible
+- Exponential backoff in `RetryQueue`: `RetryQueue(maxAttempts:baseDelay:maxDelay:)`, `RetryItem.nextAttemptAt`, `RetryItem.isReady(at:)`, and `dequeueReady(now:)`
+- `RetryQueue.markSucceeded(_:)`, `.attempts(for:)`, and `.droppedCount`
+- `LocalStore` persistence: `snapshot()`, `restore(from:)`, `encoded(using:)`, `decode(from:using:)`, `save(to:using:)`, and `load(from:using:)`, so offline edits survive a relaunch
+
+### Fixed
+- `RetryQueue.maxAttempts` was never enforced: `dequeueAll()` discarded attempt counts, so a re-enqueued record always restarted at attempt 1 and was retried forever. Attempts are now tracked per record id and survive dequeuing
+- A record that failed to push stayed `.pending` in the store *and* sat in the retry queue, so every later cycle pushed it twice. The retry batch is now de-duplicated against the pending batch
+- A record confirmed by a push was left in the retry queue, which re-pushed an already-synced record on the next cycle. Confirmed records are now cleared from the queue
+- `sync(push:pull:)` pushed pending records, queued them on failure, then immediately dequeued and pushed the same records again inside the same cycle
+
+### Changed
+- Records queued for retry now wait out their backoff (default: 1s before the first retry, doubling to a 300s cap) instead of being retried in the same cycle. Failed records also remain `.pending` in the store, so the next cycle pushes them regardless
+- `RetryQueue.enqueue(_:)` returns a discardable `Bool` reporting whether the record was queued or dropped
+- `RetryQueue.clear()` also clears the attempt history and dropped counter
+- `sync(push:pull:)` now delegates to `sync(push:pull:onProgress:)` — one implementation instead of two divergent copies
+
 ## [0.3.0] - 2026-07-15
 
 ### Added

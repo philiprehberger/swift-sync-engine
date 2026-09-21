@@ -80,4 +80,135 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(result.pushed, 1)
         XCTAssertEqual(result.pulled, 1)
     }
+
+    func testRecordPendingAndQueuedIsPushedOnce() throws {
+        let engine = SyncEngine(queue: RetryQueue(maxAttempts: 5, baseDelay: 0))
+        engine.localStore.put(SyncRecord(id: "1", status: .pending))
+        engine.retryQueue.enqueue(SyncRecord(id: "1", status: .pending))
+
+        var batches: [[String]] = []
+        _ = try engine.sync(
+            push: { records in
+                batches.append(records.map(\.id))
+                return records.map { $0.withStatus(.synced) }
+            },
+            pull: { [] }
+        )
+
+        // One batch containing the record once — not a pending push plus a retry push
+        XCTAssertEqual(batches, [["1"]])
+    }
+
+    func testSuccessfulPushClearsRetryQueue() throws {
+        let engine = SyncEngine(queue: RetryQueue(maxAttempts: 5, baseDelay: 0))
+        engine.localStore.put(SyncRecord(id: "1", status: .pending))
+        engine.retryQueue.enqueue(SyncRecord(id: "1", status: .pending))
+        XCTAssertEqual(engine.retryQueue.count, 1)
+
+        _ = try engine.sync(
+            push: { records in records.map { $0.withStatus(.synced) } },
+            pull: { [] }
+        )
+
+        XCTAssertEqual(engine.retryQueue.count, 0)
+        XCTAssertEqual(engine.retryQueue.attempts(for: "1"), 0)
+    }
+
+    func testFailedCountReportsQueuedRecords() throws {
+        let engine = SyncEngine()
+        engine.localStore.put(SyncRecord(id: "1", status: .pending))
+        engine.localStore.put(SyncRecord(id: "2", status: .pending))
+
+        let result = try engine.sync(
+            push: { _ in throw NSError(domain: "test", code: 1) },
+            pull: { [] }
+        )
+
+        XCTAssertEqual(result.pushed, 0)
+        XCTAssertEqual(result.failed, 2)
+        XCTAssertEqual(result.dropped, 0)
+    }
+
+    func testDroppedCountReportsAbandonedRecords() throws {
+        let engine = SyncEngine(queue: RetryQueue(maxAttempts: 1))
+        engine.localStore.put(SyncRecord(id: "1", status: .pending))
+
+        let result = try engine.sync(
+            push: { _ in throw NSError(domain: "test", code: 1) },
+            pull: { [] }
+        )
+
+        XCTAssertEqual(result.failed, 1)
+        XCTAssertEqual(result.dropped, 1)
+        XCTAssertEqual(engine.retryQueue.count, 0)
+    }
+
+    func testConcurrentSyncIsRefused() throws {
+        let engine = SyncEngine()
+        var nested: Error?
+
+        _ = try engine.sync(
+            push: { _ in [] },
+            pull: {
+                do {
+                    _ = try engine.sync(push: { _ in [] }, pull: { [] })
+                } catch {
+                    nested = error
+                }
+                return []
+            }
+        )
+
+        XCTAssertEqual(nested as? SyncError, .syncInProgress)
+    }
+
+    func testIsSyncingIsTrueDuringSync() throws {
+        let engine = SyncEngine()
+        var observed = false
+
+        _ = try engine.sync(
+            push: { _ in [] },
+            pull: {
+                observed = engine.isSyncing
+                return []
+            }
+        )
+
+        XCTAssertTrue(observed)
+        XCTAssertFalse(engine.isSyncing)
+    }
+
+    func testIsSyncingIsClearedAfterAThrownPull() {
+        let engine = SyncEngine()
+        XCTAssertThrowsError(
+            try engine.sync(push: { _ in [] }, pull: { throw NSError(domain: "test", code: 1) })
+        )
+        XCTAssertFalse(engine.isSyncing)
+    }
+
+    func testDueRetriesArePushedWhenNotPending() throws {
+        let engine = SyncEngine(queue: RetryQueue(maxAttempts: 5, baseDelay: 0))
+        engine.retryQueue.enqueue(SyncRecord(id: "queued", status: .pending))
+
+        let result = try engine.sync(
+            push: { records in records.map { $0.withStatus(.synced) } },
+            pull: { [] }
+        )
+
+        XCTAssertEqual(result.retried, 1)
+        XCTAssertEqual(engine.retryQueue.count, 0)
+    }
+
+    func testRetriesWaitForBackoff() throws {
+        let engine = SyncEngine(queue: RetryQueue(maxAttempts: 5, baseDelay: 60))
+        engine.retryQueue.enqueue(SyncRecord(id: "queued", status: .pending))
+
+        let result = try engine.sync(
+            push: { records in records.map { $0.withStatus(.synced) } },
+            pull: { [] }
+        )
+
+        XCTAssertEqual(result.retried, 0)
+        XCTAssertEqual(engine.retryQueue.count, 1)  // still waiting out its backoff
+    }
 }
